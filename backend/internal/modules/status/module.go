@@ -33,6 +33,7 @@ func (m *Module) RegisterRoutes(api *gin.RouterGroup) {
 	{
 		group.GET("/overview", m.handler.Overview)
 		group.GET("/lamps", m.handler.Lamps)
+		group.GET("/lamps/:lampId/repair-history", m.handler.RepairHistory)
 		group.GET("/track", m.handler.Track)
 	}
 }

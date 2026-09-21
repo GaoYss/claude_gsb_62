@@ -5,4 +5,5 @@ export const statusApi = {
   overview: () => request.get('/status/overview'),
   lamps: (params) => request.get('/status/lamps', { params }),
   track: (params) => request.get('/status/track', { params }),
+  repairHistory: (lampId, params) => request.get(`/status/lamps/${lampId}/repair-history`, { params }),
 }

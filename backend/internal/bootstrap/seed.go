@@ -10,6 +10,7 @@ import (
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
+	"streetlight/internal/modules/settlement"
 )
 
 const hour = time.Hour
@@ -146,6 +147,10 @@ func seed(db *gorm.DB) error {
 		return err
 	}
 
+	if err := seedSettlements(db, now, repairs); err != nil {
+		return err
+	}
+
 	slog.Info("演示数据初始化完成",
 		"路灯", len(lamps),
 		"故障", len(faults),
@@ -153,6 +158,101 @@ func seed(db *gorm.DB) error {
 	)
 	return nil
 }
+
+// seedSettlements 为已完工的维修记录写入演示结算单:
+// 一张已确认(含 1 条金额不符)、一张草稿, 便于在维修履历中直接看到对账状态。
+func seedSettlements(db *gorm.DB, now time.Time, repairs []repair.Repair) error {
+	finished := make([]repair.Repair, 0)
+	for _, item := range repairs {
+		if item.Status == repair.StatusFinished {
+			finished = append(finished, item)
+		}
+	}
+	if len(finished) == 0 {
+		return nil
+	}
+
+	confirmed := settlement.Settlement{
+		SettleNo:    "JS" + now.Format("20060102") + "0001",
+		Title:       "市政照明维修半月结算单(示例-已确认)",
+		Status:      settlement.StatusConfirmed,
+		Remark:      "演示数据: 金额与维修费用逐条对账",
+		ConfirmedAt: ptrTime(now.Add(-2 * hour)),
+	}
+	draft := settlement.Settlement{
+		SettleNo: "JS" + now.Format("20060102") + "0002",
+		Title:    "市政照明维修结算单(示例-草稿)",
+		Status:   settlement.StatusDraft,
+		Remark:   "演示数据: 待财务确认",
+	}
+
+	confirmedItems := make([]settlement.SettlementItem, 0)
+	for index, item := range finished {
+		if index >= 4 {
+			break
+		}
+		amount := item.Cost
+		team := item.RepairTeam
+		if team != "" {
+			confirmed.RepairTeam = team
+		}
+		// 第 3 条演示金额不符: 结算时核减了部分材料费。
+		if index == 2 && amount > 0 {
+			amount -= 20
+		}
+		confirmedItems = append(confirmedItems, settlement.SettlementItem{
+			RepairID: item.ID, RepairNo: item.RepairNo,
+			LampID: item.LampID, LampCode: item.LampCode, FaultNo: item.FaultNo,
+			Amount: amount,
+		})
+	}
+	for _, item := range confirmedItems {
+		confirmed.TotalAmount += item.Amount
+	}
+
+	draftItems := make([]settlement.SettlementItem, 0)
+	for index, item := range finished {
+		if index < 4 || index >= 6 {
+			continue
+		}
+		if item.RepairTeam != "" {
+			draft.RepairTeam = item.RepairTeam
+		}
+		draftItems = append(draftItems, settlement.SettlementItem{
+			RepairID: item.ID, RepairNo: item.RepairNo,
+			LampID: item.LampID, LampCode: item.LampCode, FaultNo: item.FaultNo,
+			Amount: item.Cost,
+		})
+		draft.TotalAmount += item.Cost
+	}
+
+	if err := db.Create(&confirmed).Error; err != nil {
+		return fmt.Errorf("写入结算单演示数据失败: %w", err)
+	}
+	for index := range confirmedItems {
+		confirmedItems[index].SettlementID = confirmed.ID
+	}
+	if len(confirmedItems) > 0 {
+		if err := db.Create(&confirmedItems).Error; err != nil {
+			return fmt.Errorf("写入结算明细演示数据失败: %w", err)
+		}
+	}
+
+	if len(draftItems) > 0 {
+		if err := db.Create(&draft).Error; err != nil {
+			return fmt.Errorf("写入草稿结算单演示数据失败: %w", err)
+		}
+		for index := range draftItems {
+			draftItems[index].SettlementID = draft.ID
+		}
+		if err := db.Create(&draftItems).Error; err != nil {
+			return fmt.Errorf("写入草稿结算明细演示数据失败: %w", err)
+		}
+	}
+	return nil
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }
 
 // buildSeedLamps 生成 6 条道路共 30 盏路灯的台账数据。
 func buildSeedLamps(now time.Time) []lamp.Lamp {

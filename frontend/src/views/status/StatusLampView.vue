@@ -63,8 +63,9 @@
             <span v-else class="text-muted">暂无维修记录</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
+            <el-button link type="info" @click="goHistory(row)">维修履历</el-button>
             <el-button link type="primary" @click="goTrack({ lamp_code: row.lamp_code })">进度追踪</el-button>
           </template>
         </el-table-column>
@@ -105,6 +106,10 @@ const { loading, rows, total, query, load, search, reset, changePage, changePage
 
 function goTrack(params) {
   router.push({ path: '/status/track', query: params })
+}
+
+function goHistory(row) {
+  router.push({ name: 'lamp-history', params: { id: row.lamp_id } })
 }
 
 onMounted(() => {

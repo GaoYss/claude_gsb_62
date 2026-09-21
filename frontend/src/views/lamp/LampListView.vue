@@ -41,8 +41,9 @@
         <el-table-column label="安装日期" width="120">
           <template #default="{ row }">{{ formatDate(row.install_date) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
+            <el-button link type="info" @click="goHistory(row)">维修履历</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="warning" @click="goRegisterFault(row)">登记故障</el-button>
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
@@ -108,6 +109,10 @@ function openEdit(row) {
 
 function goRegisterFault(row) {
   router.push({ path: '/faults', query: { lamp_id: row.id, lamp_code: row.code } })
+}
+
+function goHistory(row) {
+  router.push({ name: 'lamp-history', params: { id: row.id } })
 }
 
 async function handleDelete(row) {

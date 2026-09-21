@@ -38,16 +38,17 @@ func IsValidResult(result string) bool {
 
 // Repair 维修记录, 一条记录对应故障的一次维修过程。
 type Repair struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	RepairNo     string     `gorm:"size:64;uniqueIndex;not null" json:"repair_no"`
-	FaultID      uint       `gorm:"index;not null" json:"fault_id"`
-	FaultNo      string     `gorm:"size:64;index" json:"fault_no"`
-	LampID       uint       `gorm:"index" json:"lamp_id"`
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	RepairNo string `gorm:"size:64;uniqueIndex;not null" json:"repair_no"`
+	FaultID  uint   `gorm:"index;not null" json:"fault_id"`
+	FaultNo  string `gorm:"size:64;index" json:"fault_no"`
+	// LampID + StartedAt 复合索引: 单灯履历按发生时间倒序翻页时直接走索引, 数据量上千也稳定。
+	LampID       uint       `gorm:"index;index:idx_repair_lamp_started,priority:1" json:"lamp_id"`
 	LampCode     string     `gorm:"size:64;index" json:"lamp_code"`
 	Repairman    string     `gorm:"size:64;index;not null" json:"repairman"`
 	RepairTeam   string     `gorm:"size:64;index" json:"repair_team"`
 	ContactPhone string     `gorm:"size:32" json:"contact_phone"`
-	StartedAt    time.Time  `gorm:"index;not null" json:"started_at"`
+	StartedAt    time.Time  `gorm:"index;not null;index:idx_repair_lamp_started,priority:2" json:"started_at"`
 	FinishedAt   *time.Time `json:"finished_at"`
 	Status       string     `gorm:"size:32;index;not null;default:ongoing" json:"status"`
 	Result       string     `gorm:"size:32;index" json:"result"`

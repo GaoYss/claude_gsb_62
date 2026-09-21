@@ -49,6 +49,11 @@ func (s *Service) Get(ctx context.Context, id uint) (*Repair, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
+// GetByID 查询维修记录详情, 满足结算模块 RepairPort 端口定义。
+func (s *Service) GetByID(ctx context.Context, id uint) (*Repair, error) {
+	return s.repo.GetByID(ctx, id)
+}
+
 // List 分页查询维修记录。
 func (s *Service) List(ctx context.Context, query ListQuery) ([]Repair, int64, pagination.Query, error) {
 	page := pagination.Parse(query.Params, repairSortSpec)
