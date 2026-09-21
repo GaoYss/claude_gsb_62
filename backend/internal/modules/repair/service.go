@@ -33,15 +33,27 @@ type FaultPort interface {
 	SyncRepairStats(ctx context.Context, faultID uint, repairCount int, latestRepairID *uint) error
 }
 
+// SettlementPort 由费用结算模块实现, 用于删除维修记录前校验是否已进入结算单。
+// 仅在本包声明端口接口, 不反向依赖 settlement 包, 避免包循环依赖。
+type SettlementPort interface {
+	IsRepairSettled(ctx context.Context, repairID uint) (settled bool, settlementID uint, settleNo string, err error)
+}
+
 // Service 承载维修记录录入的业务规则。
 type Service struct {
-	repo   *Repository
-	faults FaultPort
+	repo        *Repository
+	faults      FaultPort
+	settlements SettlementPort
 }
 
 // NewService 构造维修记录服务。
 func NewService(repo *Repository, faults FaultPort) *Service {
 	return &Service{repo: repo, faults: faults}
+}
+
+// SetSettlementPort 注入结算占用校验端口, 在 bootstrap 中装配以避免构造循环依赖。
+func (s *Service) SetSettlementPort(port SettlementPort) {
+	s.settlements = port
 }
 
 // Get 查询维修记录详情。
@@ -71,7 +83,9 @@ func (s *Service) ListByFault(ctx context.Context, faultID uint) ([]Repair, erro
 	return s.repo.ListByFault(ctx, faultID)
 }
 
-// Create 录入维修记录(维修开工), 并联动故障与路灯状态。
+// Create 录入维修记录。默认即"开工"; 当请求标记 backfill 时按补录处理:
+// 必须同时提交完工时间与维修结果, 记录直接以已完工状态按实际发生时间归档,
+// 不改动故障与路灯的当前状态, 仅补登维修次数。履历按开工时间排序, 因此补录记录自动落到正确时间位置。
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error) {
 	target, err := s.faults.GetByID(ctx, req.FaultID)
 	if err != nil {
@@ -79,17 +93,6 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 	}
 	if target.Status == fault.StatusClosed {
 		return nil, apperr.Conflict("故障 %s 已关闭, 不允许再登记维修记录", target.FaultNo)
-	}
-	if target.Status == fault.StatusRepaired {
-		return nil, apperr.Conflict("故障 %s 已修复, 如需返修请先登记新的维修记录并重新开工", target.FaultNo)
-	}
-
-	ongoing, err := s.repo.GetOngoingByFault(ctx, target.ID)
-	if err != nil {
-		return nil, err
-	}
-	if ongoing != nil {
-		return nil, apperr.Conflict("故障 %s 已有进行中的维修记录 %s, 请先完成后再录入", target.FaultNo, ongoing.RepairNo)
 	}
 
 	repairman := strings.TrimSpace(req.Repairman)
@@ -103,6 +106,22 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 	}
 	if startedAt.Before(target.ReportedAt) {
 		return nil, apperr.BadRequest("开工时间不能早于故障上报时间 %s", target.ReportedAt.Format("2006-01-02 15:04:05"))
+	}
+
+	if req.Backfill {
+		return s.createBackfilled(ctx, req, target, repairman, startedAt)
+	}
+
+	if target.Status == fault.StatusRepaired {
+		return nil, apperr.Conflict("故障 %s 已修复, 如需返修请先登记新的维修记录并重新开工", target.FaultNo)
+	}
+
+	ongoing, err := s.repo.GetOngoingByFault(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	if ongoing != nil {
+		return nil, apperr.Conflict("故障 %s 已有进行中的维修记录 %s, 请先完成后再录入", target.FaultNo, ongoing.RepairNo)
 	}
 
 	entity := &Repair{
@@ -127,6 +146,69 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Repair, error
 
 	// 开工后: 故障转为维修中, 路灯转为维修状态
 	if err := s.faults.OnRepairStarted(ctx, target.ID, entity.ID); err != nil {
+		return nil, err
+	}
+
+	entity.FillDuration()
+	return entity, nil
+}
+
+// createBackfilled 归档一条补录的早期完工记录, 只补登统计不推进状态机。
+func (s *Service) createBackfilled(ctx context.Context, req CreateRequest, target *fault.Fault, repairman string, startedAt time.Time) (*Repair, error) {
+	result := strings.TrimSpace(req.Result)
+	if result == "" {
+		return nil, apperr.BadRequest("补录维修记录必须填写维修结果")
+	}
+	if !IsValidResult(result) {
+		return nil, apperr.BadRequest("非法的维修结果: %s", result)
+	}
+	finishedAt, err := parseTime(req.FinishedAt, time.Time{})
+	if err != nil {
+		return nil, err
+	}
+	if finishedAt.IsZero() {
+		return nil, apperr.BadRequest("补录维修记录必须填写完工时间")
+	}
+	if finishedAt.Before(startedAt) {
+		return nil, apperr.BadRequest("完工时间不能早于开工时间")
+	}
+
+	entity := &Repair{
+		FaultID:      target.ID,
+		FaultNo:      target.FaultNo,
+		LampID:       target.LampID,
+		LampCode:     target.LampCode,
+		Repairman:    repairman,
+		RepairTeam:   strings.TrimSpace(req.RepairTeam),
+		ContactPhone: strings.TrimSpace(req.ContactPhone),
+		StartedAt:    startedAt,
+		FinishedAt:   &finishedAt,
+		Status:       StatusFinished,
+		Result:       result,
+		Content:      strings.TrimSpace(req.Content),
+		Materials:    strings.TrimSpace(req.Materials),
+		Cost:         valueOrZero(req.Cost),
+		Remark:       strings.TrimSpace(req.Remark),
+	}
+
+	if err := s.repo.CreateWithUniqueNo(ctx, entity, "WX"+startedAt.Format("20060102")); err != nil {
+		return nil, err
+	}
+
+	// 补登维修次数与最近维修记录, 但不改变故障当前处理状态(完工记录为历史事实)。
+	count, err := s.repo.CountByFault(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	latest, err := s.repo.LatestByFault(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	var latestID *uint
+	if latest != nil {
+		latestID = &latest.ID
+	}
+	if err := s.faults.SyncRepairStats(ctx, target.ID, int(count), latestID); err != nil {
 		return nil, err
 	}
 
@@ -247,6 +329,17 @@ func (s *Service) Delete(ctx context.Context, id uint) error {
 	}
 	if target.Status == fault.StatusClosed {
 		return apperr.Conflict("故障 %s 已关闭, 不允许删除其维修记录", target.FaultNo)
+	}
+
+	// 已进入结算单的维修费用是对账凭据, 必须先从结算单移除才能删除。
+	if s.settlements != nil {
+		settled, _, settleNo, err := s.settlements.IsRepairSettled(ctx, id)
+		if err != nil {
+			return err
+		}
+		if settled {
+			return apperr.Conflict("维修记录 %s 已进入结算单 %s, 请先从结算单移除后再删除", entity.RepairNo, settleNo)
+		}
 	}
 
 	if err := s.repo.Delete(ctx, id); err != nil {

@@ -13,6 +13,7 @@ import (
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
+	"streetlight/internal/modules/settlement"
 	"streetlight/pkg/pagination"
 )
 
@@ -51,15 +52,16 @@ type TrackQuery struct {
 // Service 提供跨模块的维修状态查询能力(只读)。
 // 作为读模型, 它直接基于 lamp / fault / repair 三张表组装视图, 避免不必要的多次往返查询。
 type Service struct {
-	db      *gorm.DB
-	lamps   *lamp.Repository
-	faults  *fault.Repository
-	repairs *repair.Repository
+	db          *gorm.DB
+	lamps       *lamp.Repository
+	faults      *fault.Repository
+	repairs     *repair.Repository
+	settlements *settlement.Repository
 }
 
 // NewService 构造维修状态查询服务。
-func NewService(db *gorm.DB, lamps *lamp.Repository, faults *fault.Repository, repairs *repair.Repository) *Service {
-	return &Service{db: db, lamps: lamps, faults: faults, repairs: repairs}
+func NewService(db *gorm.DB, lamps *lamp.Repository, faults *fault.Repository, repairs *repair.Repository, settlements *settlement.Repository) *Service {
+	return &Service{db: db, lamps: lamps, faults: faults, repairs: repairs, settlements: settlements}
 }
 
 // Overview 汇总维修状态看板数据。

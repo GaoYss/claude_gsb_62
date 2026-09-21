@@ -3,6 +3,7 @@ package repair_test
 import (
 	"context"
 	"net/http"
+	"time"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -237,4 +238,80 @@ func TestFaultValidation(t *testing.T) {
 	// 存在未闭环故障时不允许删除路灯
 	h.createFault(t, device.ID, "删除校验")
 	requireConflict(t, h.lamps.Delete(ctx, device.ID))
+}
+
+func TestRepairBackfillHistoricalRecord(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	device := h.createLamp(t, "LD-T-010")
+
+	// 故障本身也补录在一年前。
+	reported := time.Now().AddDate(-1, 0, -2)
+	started := time.Now().AddDate(-1, 0, -1)
+	finished := started.Add(3 * time.Hour)
+	entity, err := h.faults.Create(ctx, fault.CreateRequest{
+		LampID:      device.ID,
+		FaultType:   "灯杆倾斜",
+		Description: "补录的历史故障",
+		ReportedAt:  reported.Format("2006-01-02 15:04:05"),
+	})
+	require.NoError(t, err)
+
+	cost := 980.0
+	backfilled, err := h.repairs.Create(ctx, repair.CreateRequest{
+		FaultID:    entity.ID,
+		Repairman:  "老周",
+		RepairTeam: "市政照明二班",
+		StartedAt:  started.Format("2006-01-02 15:04:05"),
+		FinishedAt: finished.Format("2006-01-02 15:04:05"),
+		Result:     repair.ResultFixed,
+		Cost:       &cost,
+		Backfill:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, repair.StatusFinished, backfilled.Status)
+	require.Equal(t, repair.ResultFixed, backfilled.Result)
+	require.NotNil(t, backfilled.FinishedAt)
+
+	// 补录不推进状态机: 故障仍是待处理, 次数已补登。
+	got, err := h.faults.GetByID(ctx, entity.ID)
+	require.NoError(t, err)
+	require.Equal(t, fault.StatusPending, got.Status)
+	require.Equal(t, 1, got.RepairCount)
+
+	// 之后仍可正常开工(待处理 -> 维修中)。
+	ongoing, err := h.repairs.Create(ctx, repair.CreateRequest{
+		FaultID: entity.ID, Repairman: "维修工甲",
+	})
+	require.NoError(t, err)
+	require.Equal(t, repair.StatusOngoing, ongoing.Status)
+	got, err = h.faults.GetByID(ctx, entity.ID)
+	require.NoError(t, err)
+	require.Equal(t, fault.StatusProcessing, got.Status)
+	require.Equal(t, 2, got.RepairCount)
+
+	// 补录缺少完工时间/结果时拒绝。
+	_, err = h.repairs.Create(ctx, repair.CreateRequest{
+		FaultID:   entity.ID,
+		Repairman: "维修工乙",
+		StartedAt: started.Format("2006-01-02 15:04:05"),
+		Result:    repair.ResultFixed,
+		Backfill:  true,
+	})
+	businessErr, ok := apperr.As(err)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadRequest, businessErr.Status)
+
+	// 开工早于故障上报时间拒绝。
+	_, err = h.repairs.Create(ctx, repair.CreateRequest{
+		FaultID:    entity.ID,
+		Repairman:  "维修工乙",
+		StartedAt:  reported.Add(-time.Hour).Format("2006-01-02 15:04:05"),
+		FinishedAt: reported.Format("2006-01-02 15:04:05"),
+		Result:     repair.ResultFixed,
+		Backfill:   true,
+	})
+	businessErr, ok = apperr.As(err)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadRequest, businessErr.Status)
 }

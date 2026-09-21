@@ -13,14 +13,17 @@ import (
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
+	"streetlight/internal/modules/settlement"
 	"streetlight/internal/modules/status"
 )
 
 type harness struct {
-	lamps   *lamp.Service
-	faults  *fault.Service
-	repairs *repair.Service
-	status  *status.Service
+	db         *gorm.DB
+	lamps      *lamp.Service
+	faults     *fault.Service
+	repairs    *repair.Service
+	settlements *settlement.Service
+	status     *status.Service
 }
 
 func newHarness(t *testing.T) *harness {
@@ -36,7 +39,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 
-	require.NoError(t, db.AutoMigrate(&lamp.Lamp{}, &fault.Fault{}, &repair.Repair{}))
+	require.NoError(t, db.AutoMigrate(&lamp.Lamp{}, &fault.Fault{}, &repair.Repair{}, &settlement.Settlement{}, &settlement.SettlementItem{}))
 
 	lampRepository := lamp.NewRepository(db)
 	lampService := lamp.NewService(lampRepository)
@@ -48,11 +51,17 @@ func newHarness(t *testing.T) *harness {
 	repairRepository := repair.NewRepository(db)
 	repairService := repair.NewService(repairRepository, faultService)
 
+	settlementRepository := settlement.NewRepository(db)
+	settlementService := settlement.NewService(db, settlementRepository)
+	repairService.SetSettlementPort(settlementService)
+
 	return &harness{
-		lamps:   lampService,
-		faults:  faultService,
-		repairs: repairService,
-		status:  status.NewService(db, lampRepository, faultRepository, repairRepository),
+		db:          db,
+		lamps:       lampService,
+		faults:      faultService,
+		repairs:     repairService,
+		settlements: settlementService,
+		status:      status.NewService(db, lampRepository, faultRepository, repairRepository, settlementRepository),
 	}
 }
 

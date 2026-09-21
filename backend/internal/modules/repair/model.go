@@ -42,12 +42,12 @@ type Repair struct {
 	RepairNo     string     `gorm:"size:64;uniqueIndex;not null" json:"repair_no"`
 	FaultID      uint       `gorm:"index;not null" json:"fault_id"`
 	FaultNo      string     `gorm:"size:64;index" json:"fault_no"`
-	LampID       uint       `gorm:"index" json:"lamp_id"`
+	LampID       uint       `gorm:"index;index:idx_repair_lamp_started,priority:1" json:"lamp_id"`
 	LampCode     string     `gorm:"size:64;index" json:"lamp_code"`
 	Repairman    string     `gorm:"size:64;index;not null" json:"repairman"`
 	RepairTeam   string     `gorm:"size:64;index" json:"repair_team"`
 	ContactPhone string     `gorm:"size:32" json:"contact_phone"`
-	StartedAt    time.Time  `gorm:"index;not null" json:"started_at"`
+	StartedAt    time.Time  `gorm:"index;index:idx_repair_lamp_started,priority:2;not null" json:"started_at"`
 	FinishedAt   *time.Time `json:"finished_at"`
 	Status       string     `gorm:"size:32;index;not null;default:ongoing" json:"status"`
 	Result       string     `gorm:"size:32;index" json:"result"`

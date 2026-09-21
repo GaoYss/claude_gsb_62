@@ -32,6 +32,12 @@ const routes = [
         meta: { title: '维修记录录入', icon: 'Tools' },
       },
       {
+        path: 'settlements',
+        name: 'settlements',
+        component: () => import('@/views/settlement/SettlementListView.vue'),
+        meta: { title: '费用结算', icon: 'Wallet' },
+      },
+      {
         path: 'status',
         name: 'status',
         component: () => import('@/views/status/StatusLampView.vue'),

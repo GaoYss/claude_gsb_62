@@ -56,3 +56,23 @@ func (h *Handler) Track(c *gin.Context) {
 	}
 	response.OK(c, result)
 }
+
+// LampHistory 单盏路灯的完整维修履历。
+func (h *Handler) LampHistory(c *gin.Context) {
+	lampID, err := httpx.ParseID(c, "lampId")
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	var query HistoryQuery
+	if err := httpx.BindQuery(c, &query); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	result, err := h.service.LampHistory(c.Request.Context(), lampID, query)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, result)
+}

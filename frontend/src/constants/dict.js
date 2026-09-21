@@ -44,6 +44,19 @@ export const REPAIR_RESULT = {
   unfixable: { label: '无法修复', type: 'danger' },
 }
 
+// 结算单状态。
+export const SETTLE_STATUS = {
+  draft: { label: '草稿', type: 'warning' },
+  confirmed: { label: '已确认', type: 'success' },
+}
+
+// 维修费用与结算单金额的逐条对账结果。
+export const RECONCILE_STATUS = {
+  matched: { label: '金额一致', type: 'success' },
+  different: { label: '金额不一致', type: 'danger' },
+  unbilled: { label: '未结算', type: 'info' },
+}
+
 // 追踪时间线的节点名称。
 export const TIMELINE_STAGE = {
   reported: { label: '故障登记', type: 'primary' },

@@ -7,6 +7,7 @@ import (
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
+	"streetlight/internal/modules/settlement"
 )
 
 // Module 维修状态查询模块: 只读视图, 不拥有数据表。
@@ -15,9 +16,9 @@ type Module struct {
 	handler *Handler
 }
 
-// New 构造维修状态查询模块, 依赖路灯 / 故障 / 维修三个模块的只读仓储。
-func New(db *gorm.DB, lamps *lamp.Repository, faults *fault.Repository, repairs *repair.Repository) *Module {
-	service := NewService(db, lamps, faults, repairs)
+// New 构造维修状态查询模块, 依赖路灯 / 故障 / 维修 / 结算四个模块的只读仓储。
+func New(db *gorm.DB, lamps *lamp.Repository, faults *fault.Repository, repairs *repair.Repository, settlements *settlement.Repository) *Module {
+	service := NewService(db, lamps, faults, repairs, settlements)
 	return &Module{service: service, handler: NewHandler(service)}
 }
 
@@ -34,5 +35,6 @@ func (m *Module) RegisterRoutes(api *gin.RouterGroup) {
 		group.GET("/overview", m.handler.Overview)
 		group.GET("/lamps", m.handler.Lamps)
 		group.GET("/track", m.handler.Track)
+		group.GET("/lamps/:lampId/history", m.handler.LampHistory)
 	}
 }

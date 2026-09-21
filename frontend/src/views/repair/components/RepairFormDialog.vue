@@ -15,7 +15,7 @@
           reserve-keyword
           :remote-method="searchFaults"
           :loading="faultLoading"
-          placeholder="输入故障单号 / 路灯编号搜索未闭环故障"
+          :placeholder="form.backfill ? '输入故障单号 / 路灯编号搜索全部故障' : '输入故障单号 / 路灯编号搜索未闭环故障'"
           style="width: 100%"
           @change="handleFaultChange"
         >
@@ -73,6 +73,36 @@
             />
           </el-form-item>
         </el-col>
+        <el-col v-if="!isEdit" :span="12">
+          <el-form-item label="补录记录">
+            <el-switch v-model="form.backfill" active-text="补录早期记录(直接完工)" />
+          </el-form-item>
+        </el-col>
+        <template v-if="form.backfill && !isEdit">
+          <el-col :span="12">
+            <el-form-item label="完工时间" prop="finished_at">
+              <el-date-picker
+                v-model="form.finished_at"
+                type="datetime"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                placeholder="实际完工时间"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="维修结果" prop="result">
+              <el-select v-model="form.result" placeholder="请选择维修结果" style="width: 100%">
+                <el-option
+                  v-for="(item, key) in REPAIR_RESULT"
+                  :key="key"
+                  :label="item.label"
+                  :value="key"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </template>
         <el-col :span="24">
           <el-form-item label="维修内容" prop="content">
             <el-input v-model="form.content" type="textarea" :rows="2" maxlength="512" show-word-limit placeholder="例如: 更换驱动电源并复测绝缘" />
@@ -104,13 +134,13 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import StatusTag from '@/components/common/StatusTag.vue'
 import { faultApi } from '@/api/fault'
 import { repairApi } from '@/api/repair'
 import { useDictStore } from '@/stores/dict'
-import { FAULT_LEVEL, FAULT_STATUS } from '@/constants/dict'
+import { FAULT_LEVEL, FAULT_STATUS, REPAIR_RESULT } from '@/constants/dict'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -143,6 +173,9 @@ const createForm = () => ({
   materials: '',
   cost: 0,
   remark: '',
+  backfill: false,
+  finished_at: '',
+  result: 'fixed',
 })
 
 const form = reactive(createForm())
@@ -150,13 +183,21 @@ const form = reactive(createForm())
 const rules = {
   fault_id: [{ required: true, message: '请选择关联故障', trigger: 'change' }],
   repairman: [{ required: true, message: '请选择或输入维修人员', trigger: 'change' }],
+  finished_at: [{ required: true, message: '补录必须填写实际完工时间', trigger: 'change' }],
+  result: [{ required: true, message: '请选择维修结果', trigger: 'change' }],
 }
 
 async function searchFaults(keyword = '') {
   faultLoading.value = true
   try {
-    const data = await faultApi.list({ keyword, only_open: true, page: 1, page_size: 20 }, { silent: true })
-    faultCandidates.value = data?.items ?? []
+    // 补录早期记录时允许选择任意未关闭故障(含已修复); 常规开工只允许未闭环故障。
+    const params = { keyword, page: 1, page_size: 50 }
+    if (!form.backfill) params.only_open = true
+    const data = await faultApi.list(params, { silent: true })
+    // 已关闭故障不允许再登记维修(后端同样拦截), 补录时前端先过滤掉。
+    faultCandidates.value = (data?.items ?? []).filter((item) =>
+      form.backfill ? item.status !== 'closed' : true,
+    )
   } catch (error) {
     faultCandidates.value = []
   } finally {
@@ -167,6 +208,16 @@ async function searchFaults(keyword = '') {
 function handleFaultChange(id) {
   selectedFault.value = faultCandidates.value.find((item) => item.id === id) ?? null
 }
+
+// 切换补录开关后重新拉取候选故障(补录可选已修复故障, 常规只选未闭环)。
+watch(
+  () => form.backfill,
+  () => {
+    if (!isEdit.value && !lockedFault.value) {
+      searchFaults('')
+    }
+  },
+)
 
 // 打开弹窗时初始化: 编辑模式回填记录, 新增模式可带入选中的故障。
 async function syncForm() {
@@ -213,11 +264,15 @@ async function handleSubmit() {
       delete payload.started_at
     }
     if (isEdit.value) {
-      const { fault_id: _ignored, ...rest } = payload
+      const { fault_id: _ignored, backfill: _b, finished_at: _f, result: _r, ...rest } = payload
       await repairApi.update(props.model.id, rest)
       ElMessage.success('维修记录已更新')
-    } else {
+    } else if (form.backfill) {
       await repairApi.create(payload)
+      ElMessage.success('补录的早期维修记录已按实际发生时间归入履历')
+    } else {
+      const { backfill: _b, finished_at: _f, result: _r, ...rest } = payload
+      await repairApi.create(rest)
       ElMessage.success('维修记录已录入, 故障状态更新为维修中')
     }
     emit('update:modelValue', false)

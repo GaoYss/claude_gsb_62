@@ -14,12 +14,13 @@
 
 | 模块 | 说明 | 关键能力 |
 | --- | --- | --- |
-| 路灯台账 | 路灯基础档案维护 | 编号/道路/运行状态/灯具类型筛选, 按道路与状态统计, 删除前校验未闭环故障 |
+| 路灯台账 | 路灯基础档案维护 | 编号/道路/运行状态/灯具类型筛选, 按道路与状态统计, 删除前校验未闭环故障, **台账详情查看单灯完整维修履历** |
 | 故障登记 | 故障工单登记与流转 | 自动生成故障单号, 紧急程度分级, 状态机流转, 闭环关闭 |
-| 维修记录录入 | 针对故障单登记维修过程 | 自动生成维修单号, 开工/完工时间, 耗材与费用, 四种维修结果 |
-| 维修状态查询 | 只读的综合看板与追踪视图 | 全局概览, 路灯级维修状态列表, 按故障单号/路灯编号的全链路时间线 |
+| 维修记录录入 | 针对故障单登记维修过程 | 自动生成维修单号, 开工/完工时间, 耗材与费用, 四种维修结果, **支持补录早期完工记录** |
+| 费用结算 | 维修费用结算单与明细 | 逐条登记维修结算金额, 草稿/确认状态, 与维修费实时对账(一致/不一致/未结算) |
+| 维修状态查询 | 只读的综合看板与追踪视图 | 全局概览, 路灯级维修状态列表, 按故障单号/路灯编号的全链路时间线, **单灯维修履历(分页/过滤/累计统计)** |
 
-四个模块在后端是四个平级的独立包 (`internal/modules/{lamp,fault,repair,status}`), 在前端是四组独立的视图与子组件, 互不耦合; 新增一个业务模块只需要实现 `module.Module` 接口并注册。
+五个模块在后端是五个平级的独立包 (`internal/modules/{lamp,fault,repair,settlement,status}`), 在前端是五组独立的视图与子组件, 互不耦合; 新增一个业务模块只需要实现 `module.Module` 接口并注册。
 
 ---
 
@@ -45,7 +46,8 @@
 │   │   │   ├── lamp/                     #   路灯台账
 │   │   │   ├── fault/                    #   故障登记
 │   │   │   ├── repair/                   #   维修记录录入
-│   │   │   └── status/                   #   维修状态查询(只读, 不建表)
+│   │   │   ├── settlement/               #   费用结算(结算单 + 逐条明细 + 对账)
+│   │   │   └── status/                   #   维修状态查询(只读, 不建表, 含单灯维修履历)
 │   │   ├── response/                     # 统一响应信封 Envelope / PageData / OK / Fail
 │   ├── pkg/pagination/                   # 分页与排序参数(排序字段白名单)
 │   ├── data/                             # sqlite 数据文件(运行期生成, 已 gitignore)
@@ -68,6 +70,7 @@
 │   │       ├── lamp/LampListView.vue + components/LampFormDialog.vue
 │   │       ├── fault/FaultListView.vue + components/{FaultFormDialog,FaultDetailDrawer}.vue
 │   │       ├── repair/RepairListView.vue + components/{RepairFormDialog,FinishRepairDialog}.vue
+│   │       ├── settlement/SettlementListView.vue + components/{SettlementFormDialog,SettlementDetailDrawer}.vue
 │   │       └── status/{StatusLampView,StatusTrackView}.vue
 │   ├── nginx.conf                        # 生产: SPA 回退 + /api 反向代理
 │   ├── Dockerfile
@@ -102,13 +105,15 @@ modules/<name>/
 `bootstrap/modules.go` 负责按依赖顺序构造模块, 跨模块只允许依赖「下游端口」, 不反向依赖:
 
 ```text
-lamp.New(db)                                   -> 路灯台账(无依赖)
-fault.New(db, lampService)                     -> 故障登记(读取路灯校验)
-repair.New(db, faultService)                   -> 维修记录(驱动故障状态流转)
-status.New(db, lampRepo, faultRepo, repairRepo)-> 维修状态查询(只读聚合)
+lamp.New(db)                                        -> 路灯台账(无依赖)
+fault.New(db, lampService)                          -> 故障登记(读取路灯校验)
+repair.New(db, faultService)                        -> 维修记录(驱动故障状态流转)
+settlement.New(db)                                  -> 费用结算(直接读维修/故障表)
+status.New(db, lampRepo, faultRepo, repairRepo,
+            settlementRepo)                         -> 维修状态查询(只读聚合, 含履历与对账)
 ```
 
-路灯运行状态需要根据故障反向回填, 但 `lamp` 不能依赖 `fault`, 因此用 `lampService.SetOpenFaultCounter(faultModule.Repository())` 注入一个统计端口, 避免构造函数循环依赖。
+路灯运行状态需要根据故障反向回填, 但 `lamp` 不能依赖 `fault`, 因此用 `lampService.SetOpenFaultCounter(faultModule.Repository())` 注入一个统计端口, 避免构造函数循环依赖。维修记录删除前需要校验是否已进入结算单, 同理用 `repairService.SetSettlementPort(settlementModule.Service())` 回填端口(维修包只声明自己的 `SettlementPort` 接口, 不反向 import `settlement`)。
 
 ### 3.3 统一响应与错误
 
@@ -275,14 +280,28 @@ go test ./...
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/repairs` | 分页查询(状态/结果/维修人/班组) |
-| POST | `/repairs` | 录入维修记录(即开工; 同一故障已有进行中记录时返回 409) |
+| POST | `/repairs` | 录入维修记录(即开工; `backfill=true` 时按实际开工/完工时间补录早期完工记录; 同一故障已有进行中记录时返回 409) |
 | GET | `/repairs/meta` | 字典: 状态/结果 |
 | GET | `/repairs/statistics` | 维修统计(次数/平均耗时/费用) |
 | GET | `/repairs/fault/:faultId` | 某故障下的全部维修记录 |
 | GET | `/repairs/:id` | 详情 |
 | PUT | `/repairs/:id` | 修改 |
 | POST | `/repairs/:id/finish` | 完工(写入完工时间与维修结果) |
-| DELETE | `/repairs/:id` | 删除(会重算故障的维修次数) |
+| DELETE | `/repairs/:id` | 删除(已进入结算单的记录先被拦截; 会重算故障的维修次数) |
+
+### 费用结算
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/settlements` | 分页查询结算单(状态/关键字/含某盏路灯费用) |
+| POST | `/settlements` | 新建结算单(可一次性提交逐条明细) |
+| GET | `/settlements/repair-candidates` | 已完工且未结算的维修记录候选(用于挑选明细) |
+| GET | `/settlements/:id` | 结算单详情(含每笔维修费、结算金额与差额的逐条对账) |
+| PUT | `/settlements/:id` | 修改草稿(明细可全量替换) |
+| DELETE | `/settlements/:id` | 删除草稿(连带明细) |
+| POST | `/settlements/:id/confirm` | 确认结算单(确认后冻结) |
+| POST | `/settlements/:id/items` | 草稿追加一条明细 |
+| DELETE | `/settlements/:id/items/:itemId` | 草稿移除一条明细 |
 
 ### 维修状态查询
 
@@ -291,6 +310,7 @@ go test ./...
 | GET | `/status/overview` | 全局概览: 台账/故障/维修汇总 + 类型与道路分布 + 逾期清单 |
 | GET | `/status/lamps` | 路灯级维修状态列表(可只看未闭环) |
 | GET | `/status/track` | 全链路追踪, 参数 `fault_no` 或 `lamp_code` |
+| GET | `/status/lamps/:lampId/history` | 单灯完整维修履历: 历次故障/班组/人员/灯具耗材/费用/用时, 按实际发生时间倒序; 参数 `fault_type`(逗号分隔多选)/`start_date`/`end_date`/`time_field`(started_at\|finished_at)+分页; 同时返回全量累计次数、平均修复时长与逐条对账统计 |
 
 ---
 
@@ -301,7 +321,10 @@ go test ./...
 - **故障状态机**: `待处理 -> 维修中 -> 已修复 -> 已关闭`; 已关闭的故障拒绝任何再操作; 允许 `已修复 -> 维修中` 回退。
 - **维修结果**: 只有 `已修复(fixed)` 会把故障推进到 `已修复`, 其余结果保持 `维修中`。
 - **路灯运行状态自动联动**: 存在 `维修中` 故障 -> `维修中(maintenance)`; 存在 `待处理` 故障 -> `故障(fault)`; 否则 -> `正常(normal)`; `停用(offline)` 由人工维护。
-- **删除维修记录** 会重算故障的 `repair_count` / `latest_repair_id`, 次数归零时把故障从 `维修中` 回退到 `待处理`。
+- **删除维修记录** 会重算故障的 `repair_count` / `latest_repair_id`, 次数归零时把故障从 `维修中` 回退到 `待处理`; **已进入结算单的维修记录是对账凭据, 必须先从结算单移除才允许删除**。
+- **单灯维修履历**: 维修记录按实际开工时间倒序分页(复合索引 `lamp_id + started_at`, 以 `repair.id` 兜底), 与录入先后无关; 支持按故障类型(多选)与开工/完工时间段收窄。统计分两层: 顶部"累计维修次数/平均修复时长/累计费用/累计故障"始终是该灯全量口径, 不随筛选波动; 当前筛选口径单独给出次数、平均时长、费用与对账分布。次数、费用、平均修复时长均在数据库内聚合(SQLite 用 `julianday`, PostgreSQL 用 `EXTRACT(EPOCH)`), 单灯数千条记录翻页与统计依然稳定。
+- **补录早期记录**: 维修录入置 `backfill=true` 并提交实际开工/完工时间与维修结果, 记录直接以已完工状态归档, **按实际开工时间插入履历正确位置**; 补录只补登维修次数, 不回改故障与路灯的当前状态(故障仍须走完自身状态机), 开工时间仍不得早于故障上报时间。履历中补录记录带"补录"标记。
+- **费用逐条对账**: 结算单由"单头 + 明细"组成, 每条明细对应一条维修记录(`repair_id` 全局唯一, 一笔维修只能结算一次)。履历与结算单详情实时比对维修费用与结算金额, 给出 `金额一致 / 金额不一致 / 未结算` 与差额(容差 0.005 元); 结算单确认后冻结, 不可改删。
 - **删除路灯** 会被未闭环故障拦截; **删除故障** 要求已关闭且没有维修记录。
 - **逾期判定**: 上报超过 24 小时仍未闭环的故障计入概览的逾期清单。
 
@@ -313,6 +336,7 @@ go test ./...
 
 - 6 条道路, 每条 5 盏路灯, 共 **30 盏**, 覆盖 `正常 / 故障 / 维修中 / 停用` 四种运行状态;
 - **14 条故障**, 覆盖待处理 / 维修中 / 已修复 / 已关闭四种状态, 其中包含 2 条已逾期;
-- **12 条维修记录**, 含进行中与已完工, 带耗材、费用与维修结果。
+- **12 条维修记录**, 含进行中与已完工, 带耗材、费用与维修结果;
+- **1 张已确认演示结算单**, 取最早 4 笔完工维修逐条登记, 其中 1 笔故意留有 50 元差额, 打开台账履历即可看到"金额一致 / 金额不一致 / 未结算"三种对账状态。
 
 想从空库开始, 把 `APP_SEED` 设为 `false`, 或删除数据卷后重启。

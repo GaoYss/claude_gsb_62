@@ -10,6 +10,7 @@ import (
 	"streetlight/internal/modules/fault"
 	"streetlight/internal/modules/lamp"
 	"streetlight/internal/modules/repair"
+	"streetlight/internal/modules/settlement"
 )
 
 const hour = time.Hour
@@ -146,11 +147,78 @@ func seed(db *gorm.DB) error {
 		return err
 	}
 
+	if err := seedSettlement(db, now, repairs); err != nil {
+		return err
+	}
+
 	slog.Info("演示数据初始化完成",
 		"路灯", len(lamps),
 		"故障", len(faults),
 		"维修记录", len(repairs),
 	)
+	return nil
+}
+
+// seedSettlement 用已完工维修记录生成一张演示结算单, 其中一笔金额与维修费不一致,
+// 便于在维修履历中直接看到"金额一致 / 金额不一致 / 未结算"三种对账状态。
+func seedSettlement(db *gorm.DB, now time.Time, repairs []repair.Repair) error {
+	finished := make([]repair.Repair, 0, 4)
+	for _, item := range repairs {
+		if item.Status == repair.StatusFinished {
+			finished = append(finished, item)
+		}
+		if len(finished) >= 4 {
+			break
+		}
+	}
+	if len(finished) == 0 {
+		return nil
+	}
+
+	periodStart := now.AddDate(0, 0, -7)
+	periodEnd := now
+	header := settlement.Settlement{
+		SettleNo:    "JS" + now.Format("20060102") + "0001",
+		Title:       now.Format("2006年01月") + "市政路灯维修费用结算单",
+		PeriodStart: &periodStart,
+		PeriodEnd:   &periodEnd,
+		Status:      settlement.StatusConfirmed,
+		Operator:    "财务结算员",
+		Remark:      "演示数据",
+		ConfirmedAt: &now,
+	}
+	if err := db.Create(&header).Error; err != nil {
+		return fmt.Errorf("写入结算单演示数据失败: %w", err)
+	}
+
+	items := make([]settlement.SettlementItem, 0, len(finished))
+	var totalAmount float64
+	for index, record := range finished {
+		amount := record.Cost
+		// 第二笔故意结算 50 元差额, 展示金额不一致的对账提示。
+		if index == 1 {
+			amount += 50
+		}
+		totalAmount += amount
+		items = append(items, settlement.SettlementItem{
+			SettlementID: header.ID,
+			RepairID:     record.ID,
+			RepairNo:     record.RepairNo,
+			FaultID:      record.FaultID,
+			FaultNo:      record.FaultNo,
+			LampID:       record.LampID,
+			LampCode:     record.LampCode,
+			Amount:       amount,
+			RepairCost:   record.Cost,
+		})
+	}
+	if err := db.Create(&items).Error; err != nil {
+		return fmt.Errorf("写入结算单明细演示数据失败: %w", err)
+	}
+	if err := db.Model(&settlement.Settlement{}).Where("id = ?", header.ID).
+		Updates(map[string]any{"total_amount": totalAmount, "item_count": len(items)}).Error; err != nil {
+		return fmt.Errorf("回填结算单汇总失败: %w", err)
+	}
 	return nil
 }
 

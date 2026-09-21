@@ -41,9 +41,10 @@
         <el-table-column label="安装日期" width="120">
           <template #default="{ row }">{{ formatDate(row.install_date) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="270" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="success" @click="openHistory(row)">履历</el-button>
             <el-button link type="warning" @click="goRegisterFault(row)">登记故障</el-button>
             <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -67,6 +68,8 @@
       :lamp-type-options="dictStore.lampOptions.lamp_types"
       @saved="handleSaved"
     />
+
+    <LampHistoryDrawer v-model="historyVisible" :lamp-id="historyLampId" />
   </div>
 </template>
 
@@ -79,6 +82,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import DataPagination from '@/components/common/DataPagination.vue'
 import LampFormDialog from './components/LampFormDialog.vue'
+import LampHistoryDrawer from './components/LampHistoryDrawer.vue'
 import { lampApi } from '@/api/lamp'
 import { useDictStore } from '@/stores/dict'
 import { RUN_STATUS } from '@/constants/dict'
@@ -95,6 +99,8 @@ const { loading, rows, total, query, load, search, reset, changePage, changePage
 
 const dialogVisible = ref(false)
 const editing = ref(null)
+const historyVisible = ref(false)
+const historyLampId = ref(null)
 
 function openCreate() {
   editing.value = null
@@ -104,6 +110,11 @@ function openCreate() {
 function openEdit(row) {
   editing.value = { ...row }
   dialogVisible.value = true
+}
+
+function openHistory(row) {
+  historyLampId.value = row.id
+  historyVisible.value = true
 }
 
 function goRegisterFault(row) {

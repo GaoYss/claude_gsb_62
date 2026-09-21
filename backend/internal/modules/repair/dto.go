@@ -3,6 +3,8 @@ package repair
 import "streetlight/pkg/pagination"
 
 // CreateRequest 维修记录录入请求。
+// 默认即"开工"(记录进入维修中); 补录早期记录时置 backfill=true 并同时提交
+// finished_at 与 result, 记录直接以已完工状态按实际发生时间归档, 不回改故障现状。
 type CreateRequest struct {
 	FaultID      uint     `json:"fault_id" binding:"required"`
 	Repairman    string   `json:"repairman" binding:"required,max=64"`
@@ -13,6 +15,9 @@ type CreateRequest struct {
 	Materials    string   `json:"materials" binding:"max=255"`
 	Cost         *float64 `json:"cost" binding:"omitempty,min=0"`
 	Remark       string   `json:"remark" binding:"max=255"`
+	Backfill     bool     `json:"backfill"`
+	FinishedAt   string   `json:"finished_at" binding:"omitempty,max=32"`
+	Result       string   `json:"result" binding:"omitempty,oneof=fixed pending_parts observing unfixable"`
 }
 
 // UpdateRequest 修改维修记录, 仅未完成的记录允许修改。
